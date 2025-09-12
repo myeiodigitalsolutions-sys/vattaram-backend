@@ -26,7 +26,7 @@ const verifyAuth = async (req, res, next) => {
           email: firebaseDecoded.email || "",
           name: firebaseDecoded.name || firebaseDecoded.email?.split("@")[0] || "User",
           authMethod: "firebase",
-          isAdmin: firebaseDecoded.email === "pcsoldiers0@gmail.com" ? true : false,
+          isAdmin: firebaseDecoded.email === "myeiokln@gmail.com" ? true : false,
         });
         await user.save();
       }

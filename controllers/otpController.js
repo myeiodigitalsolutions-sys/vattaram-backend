@@ -230,7 +230,7 @@ exports.verifyToken = async (req, res) => {
             email: decoded.email || undefined, // Avoid null email
             name: decoded.name || decoded.email?.split('@')[0] || 'User',
             authMethod: 'firebase',
-            isAdmin: decoded.email === 'pcsoldiers0@gmail.com' ? true : false
+            isAdmin: decoded.email === 'myeiokln@gmail.com' ? true : false
           });
           await user.save();
         }
