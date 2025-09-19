@@ -7,6 +7,7 @@ const bodyParser = require('body-parser');
 const admin = require('./firebaseAdmin');
 const jwt = require('jsonwebtoken');
 const Razorpay = require('razorpay'); // Add this
+const crypto = require('crypto'); // CHANGE: Added for signature verify
 
 const districtRoutes = require('./routes/districtRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
@@ -23,6 +24,8 @@ const verifyAuth = require('./middleware/auth');
 const { sendOTP, verifyOTP, verifyToken } = require('./controllers/otpController');
 const User = require('./models/User');
 const ContactMessage = require('./models/ContactMessage');
+const Order = require('./models/Order'); // CHANGE: Added for webhook
+const Product = require('./models/Product'); // CHANGE: Added for inventory in webhook
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -92,31 +95,84 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(bodyParser.json());
 
-// Razorpay Webhook endpoint
-app.post('/api/razorpay/webhook', express.raw({type: 'application/json'}), (req, res) => {
+// CHANGE: Updated webhook with proper verification and order update
+app.post('/api/razorpay/webhook', express.raw({type: 'application/json'}), async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
-  const body = req.body.toString();
+  const body = req.body; // Raw buffer
 
   try {
-    // Verify webhook signature
-    const crypto = require('crypto');
+    // Verify signature
     const expectedSignature = crypto
       .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
       .update(body)
       .digest('hex');
 
-    if (signature === expectedSignature) {
-      const event = JSON.parse(body);
-      
-      if (event.event === 'payment.captured') {
-        console.log('Payment captured:', event.payload.payment.entity.id);
-        // Update order status in your database
-        // You can add logic here to update the order status
+    if (signature !== expectedSignature) {
+      console.error('Invalid webhook signature');
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    const event = JSON.parse(body.toString());
+
+    if (event.event === 'payment.captured') {
+      const payment = event.payload.payment.entity;
+      const dbOrderId = payment.notes?.dbOrderId;
+
+      if (!dbOrderId) {
+        console.warn('Webhook: No dbOrderId in notes');
+        return res.status(200).json({ message: 'Ignored - no dbOrderId' });
       }
-      
-      res.status(200).json({ message: 'Webhook received successfully' });
+
+      const order = await Order.findById(dbOrderId);
+      if (!order) {
+        console.warn('Webhook: Order not found', dbOrderId);
+        return res.status(200).json({ message: 'Ignored - order not found' });
+      }
+
+      if (order.paymentStatus === 'paid') {
+        console.log('Webhook: Payment already processed for order', dbOrderId);
+        return res.status(200).json({ message: 'Already processed' });
+      }
+
+      // Update order
+      order.paymentId = payment.id;
+      order.paymentStatus = 'paid';
+      order.paymentMethod = payment.method; // e.g., 'upi', 'card'
+      order.paymentDetails = {
+        bank: payment.bank || payment.wallet || 'Unknown',
+        vpa: payment.vpa, // For UPI
+        cardLast4: payment.card?.last4
+      };
+      order.status = 'pending'; // Ready for processing
+
+      // Update inventory if not done
+      if (!order.inventoryUpdated) {
+        const inventoryUpdates = [];
+        for (const item of order.items) {
+          const product = await Product.findById(item.productId);
+          if (product) {
+            const variant = product.variants[item.variantIndex];
+            if (variant) {
+              const weight = variant.weights[item.weightIndex];
+              if (weight && weight.quantity >= item.quantity) {
+                weight.quantity -= item.quantity;
+                await product.save();
+                inventoryUpdates.push({ productId: item.productId, success: true });
+              } else {
+                inventoryUpdates.push({ productId: item.productId, success: false, error: 'Insufficient stock' });
+              }
+            }
+          }
+        }
+        order.inventoryUpdated = true;
+        console.log('Webhook: Inventory updated for order', dbOrderId);
+      }
+
+      await order.save();
+      console.log('Webhook: Payment captured and order updated', dbOrderId);
+      res.status(200).json({ message: 'Webhook processed successfully' });
     } else {
-      res.status(400).json({ error: 'Invalid signature' });
+      res.status(200).json({ message: 'Event ignored' });
     }
   } catch (error) {
     console.error('Webhook error:', error);
@@ -164,7 +220,7 @@ app.use('/api/cart', verifyAuth, cartRoutes);
 app.use('/api/orders', verifyAuth, orderRoutes);
 app.use('/api/users', require('./routes/users'));
 app.use('/api/wishlist', wishlistRoutes);
-app.use('/api/razorpay', razorpayRoutes); // Add this line
+app.use('/api/razorpay', razorpayRoutes); // Keep for other endpoints if needed
 app.use('/admin', require('./routes/admin'));
 
 app.get('/health', (req, res) => {
