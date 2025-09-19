@@ -6,10 +6,8 @@ const path = require('path');
 const bodyParser = require('body-parser');
 const admin = require('./firebaseAdmin');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto'); // ✅ moved up before usage
-const Razorpay = require("razorpay");
+const Razorpay = require('razorpay'); // Add this
 
-// Import Routes
 const districtRoutes = require('./routes/districtRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const productRoutes = require('./routes/ProductRoutes');
@@ -19,19 +17,22 @@ const deals = require('./routes/dealsRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const wishlistRoutes = require('./routes/wishlistRoutes');
+const razorpayRoutes = require('./routes/razorpayRoutes'); // Add this new route
+
 const verifyAuth = require('./middleware/auth');
 const { sendOTP, verifyOTP, verifyToken } = require('./controllers/otpController');
-
-// Import Models
 const User = require('./models/User');
 const ContactMessage = require('./models/ContactMessage');
-require('./models/Cart'); // ✅ load globally
-require('./models/ContactMessage');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-/* ---------------------- MongoDB Connection ---------------------- */
+// Initialize Razorpay
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_SECRET,
+});
+
 const connectDB = async () => {
   try {
     if (!process.env.MONGO_URI) {
@@ -43,6 +44,11 @@ const connectDB = async () => {
       socketTimeoutMS: 45000,
     });
     console.log('MongoDB connected successfully');
+    console.log('Loading Mongoose models...');
+    require('./models/Cart');
+    console.log('Cart model loaded');
+    require('./models/ContactMessage');
+    console.log('ContactMessage model loaded');
 
     mongoose.connection.on('error', (err) => {
       console.error('MongoDB connection error:', err);
@@ -62,19 +68,15 @@ const connectDB = async () => {
     }
   }
 };
+
 connectDB();
 
-/* ---------------------- Middleware ---------------------- */
 app.use(cors({
   origin: (origin, callback) => {
     console.log('Request Origin:', origin);
     const allowedOrigins = [
       'http://localhost:3000',
       'https://vattaram-8cn5.vercel.app',
-       'https://vattaram.shop',
-       'https://vattaram-backend-5.onrender.com',
-
-
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -87,9 +89,41 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-// ✅ Removed duplicate bodyParser.json()
+app.use(bodyParser.json());
 
-/* ---------------------- Contact Routes ---------------------- */
+// Razorpay Webhook endpoint
+app.post('/api/razorpay/webhook', express.raw({type: 'application/json'}), (req, res) => {
+  const signature = req.headers['x-razorpay-signature'];
+  const body = req.body.toString();
+
+  try {
+    // Verify webhook signature
+    const crypto = require('crypto');
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
+      .update(body)
+      .digest('hex');
+
+    if (signature === expectedSignature) {
+      const event = JSON.parse(body);
+      
+      if (event.event === 'payment.captured') {
+        console.log('Payment captured:', event.payload.payment.entity.id);
+        // Update order status in your database
+        // You can add logic here to update the order status
+      }
+      
+      res.status(200).json({ message: 'Webhook received successfully' });
+    } else {
+      res.status(400).json({ error: 'Invalid signature' });
+    }
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// Contact Message Routes
 app.post('/api/contact', async (req, res) => {
   try {
     const { name, email, message } = req.body;
@@ -115,12 +149,10 @@ app.get('/api/contact', verifyAuth, async (req, res) => {
   }
 });
 
-/* ---------------------- OTP Routes ---------------------- */
 app.post('/api/send-otp', sendOTP);
 app.post('/api/verify-otp', verifyOTP);
 app.post('/api/verify-token', verifyToken);
 
-/* ---------------------- Other Routes ---------------------- */
 app.use('/api/districts', districtRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
@@ -131,9 +163,9 @@ app.use('/api/cart', verifyAuth, cartRoutes);
 app.use('/api/orders', verifyAuth, orderRoutes);
 app.use('/api/users', require('./routes/users'));
 app.use('/api/wishlist', wishlistRoutes);
+app.use('/api/razorpay', razorpayRoutes); // Add this line
 app.use('/admin', require('./routes/admin'));
 
-/* ---------------------- Health Check ---------------------- */
 app.get('/health', (req, res) => {
   const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   res.status(200).json({ 
@@ -143,80 +175,19 @@ app.get('/health', (req, res) => {
   });
 });
 
-/* ---------------------- Razorpay Setup ---------------------- */
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
-// ✅ Webhook Route
-app.post("/api/payment/webhook", (req, res) => {
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const shasum = crypto.createHmac("sha256", secret);
-  shasum.update(JSON.stringify(req.body));
-  const digest = shasum.digest("hex");
-
-  if (digest === req.headers["x-razorpay-signature"]) {
-    console.log("Webhook verified:", req.body);
-    // TODO: process payment event (update DB, notify user, etc.)
-    res.status(200).json({ status: "ok" });
-  } else {
-    console.log("Invalid signature");
-    res.status(400).send("Invalid signature");
-  }
-});
-
-// ✅ Create Order
-app.post("/api/payment/create-order", async (req, res) => {
-  try {
-    const { amount } = req.body;
-    const options = {
-      amount: amount * 100, // convert to paise
-      currency: "INR",
-      receipt: "receipt_" + Date.now(),
-    };
-    const order = await razorpay.orders.create(options);
-    res.json({ success: true, orderId: order.id, amount: order.amount, currency: order.currency });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ✅ Verify Payment
-app.post("/api/payment/verify", (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-  const body = razorpay_order_id + "|" + razorpay_payment_id;
-
-  const expectedSignature = crypto
-    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-    .update(body.toString())
-    .digest("hex");
-
-  if (expectedSignature === razorpay_signature) {
-    // TODO: update DB with payment success
-    res.json({ success: true, message: "Payment verified successfully" });
-  } else {
-    res.status(400).json({ success: false, error: "Invalid signature" });
-  }
-});
-
-/* ---------------------- Base Routes ---------------------- */
 app.get('/', (req, res) => {
   res.send('South Bay Mart API Running...');
 });
 
-// 404 Handler
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-// Global Error Handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: 'Internal server error' });
 });
 
-/* ---------------------- Start Server ---------------------- */
 mongoose.connection.once('open', () => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
@@ -232,3 +203,5 @@ mongoose.connection.on('error', (err) => {
     process.exit(1);
   }
 });
+
+module.exports = { razorpay }; // Export for use in routes
