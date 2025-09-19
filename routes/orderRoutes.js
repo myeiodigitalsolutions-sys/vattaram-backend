@@ -4,6 +4,8 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const verifyAuth = require('../middleware/auth');
 const User = require('../models/User');
+const { razorpay } = require('../server'); // Import Razorpay instance
+const crypto = require('crypto');
 
 router.get('/', verifyAuth, async (req, res) => {
   try {
@@ -120,7 +122,7 @@ router.get('/:id', verifyAuth, async (req, res) => {
 router.patch('/:id/status', verifyAuth, async (req, res) => {
   try {
     const { status } = req.body;
-    const validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']; 
+    const validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'failed']; // CHANGE: Added 'failed'
     
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
@@ -171,6 +173,93 @@ router.patch('/:id/status', verifyAuth, async (req, res) => {
   }
 });
 
+// CHANGE: New endpoint for payment verification and completion
+router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order || order.userId !== req.user.uid) {
+      return res.status(404).json({ error: 'Order not found or unauthorized' });
+    }
+
+    if (order.paymentStatus !== 'pending') {
+      return res.status(400).json({ error: 'Payment already processed' });
+    }
+
+    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
+
+    if (order.razorpayOrderId !== razorpay_order_id) {
+      return res.status(400).json({ error: 'Order ID mismatch' });
+    }
+
+    // Verify signature
+    const generatedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_SECRET)
+      .update(razorpay_order_id + '|' + razorpay_payment_id)
+      .digest('hex');
+
+    if (generatedSignature !== razorpay_signature) {
+      return res.status(400).json({ error: 'Invalid payment signature' });
+    }
+
+    // Fetch payment to confirm
+    const payment = await razorpay.payments.fetch(razorpay_payment_id);
+    if (payment.status !== 'captured') {
+      return res.status(400).json({ error: 'Payment not captured' });
+    }
+
+    // Update order
+    order.paymentId = razorpay_payment_id;
+    order.signature = razorpay_signature;
+    order.paymentStatus = 'paid';
+    order.paymentMethod = payment.method; // 'card', 'upi', etc.
+    order.paymentDetails = {
+      bank: payment.bank || payment.wallet,
+      vpa: payment.vpa,
+      cardLast4: payment.card?.last4
+    };
+    order.status = 'pending'; // Ready for fulfillment
+
+    // Update inventory if not done
+    let inventoryUpdates = [];
+    if (!order.inventoryUpdated) {
+      for (const item of order.items) {
+        const product = await Product.findById(item.productId);
+        if (product) {
+          const variant = product.variants[item.variantIndex];
+          if (variant) {
+            const weight = variant.weights[item.weightIndex];
+            if (weight) {
+              if (weight.quantity >= item.quantity) {
+                weight.quantity -= item.quantity;
+                await product.save();
+                inventoryUpdates.push({ productId: item.productId, success: true });
+              } else {
+                inventoryUpdates.push({ productId: item.productId, success: false, error: 'Insufficient stock' });
+              }
+            }
+          }
+        }
+      }
+      order.inventoryUpdated = true;
+    }
+
+    await order.save();
+
+    res.json({
+      success: true,
+      order,
+      inventoryUpdate: {
+        successful: inventoryUpdates.filter(u => u.success).length,
+        failed: inventoryUpdates.filter(u => !u.success).length,
+        details: inventoryUpdates.filter(u => !u.success)
+      }
+    });
+  } catch (err) {
+    console.error('Error completing payment:', err);
+    res.status(500).json({ error: 'Failed to complete payment', details: err.message });
+  }
+});
+
 router.post('/', verifyAuth, async (req, res) => {
   try {
     const { 
@@ -178,8 +267,7 @@ router.post('/', verifyAuth, async (req, res) => {
       items, 
       shippingAddress, 
       totalAmount, 
-      deliveryFee,
-      paymentDetails = {} 
+      deliveryFee
     } = req.body;
 
     // Validation checks
@@ -189,6 +277,10 @@ router.post('/', verifyAuth, async (req, res) => {
         error: 'Missing required fields',
         requiredFields: ['paymentMethod', 'items', 'shippingAddress', 'totalAmount', 'deliveryFee']
       });
+    }
+
+    if (!['online', 'cod'].includes(paymentMethod)) { // CHANGE: Updated validation
+      return res.status(400).json({ error: 'Invalid payment method', valid: ['online', 'cod'] });
     }
 
     if (!Array.isArray(items) || items.length === 0) {
@@ -201,14 +293,11 @@ router.post('/', verifyAuth, async (req, res) => {
     // Item validation
     const itemErrors = [];
     items.forEach((item, index) => {
-      if (!item.productId || !item.name || !item.price || !item.quantity) {
+      if (!item.productId || !item.name || !item.price || !item.quantity || item.variantIndex === undefined || item.weightIndex === undefined) {
         itemErrors.push(`Item ${index + 1} is missing required fields`);
       }
       if (item.price <= 0 || item.quantity <= 0) {
         itemErrors.push(`Item ${index + 1} has invalid price or quantity`);
-      }
-      if (item.variantIndex === undefined || item.weightIndex === undefined) {
-        itemErrors.push(`Item ${index + 1} is missing variantIndex or weightIndex`);
       }
     });
 
@@ -232,7 +321,7 @@ router.post('/', verifyAuth, async (req, res) => {
       });
     }
 
-    // Validate phone number
+    // Phone validation
     const phoneRegex = /^[6-9]\d{9}$/;
     if (!phoneRegex.test(shippingAddress.phone)) {
       return res.status(400).json({
@@ -241,7 +330,7 @@ router.post('/', verifyAuth, async (req, res) => {
       });
     }
 
-    // Validate postal code
+    // Postal code validation
     const postalCodeRegex = /^\d{6}$/;
     if (!postalCodeRegex.test(shippingAddress.postalCode)) {
       return res.status(400).json({
@@ -250,7 +339,7 @@ router.post('/', verifyAuth, async (req, res) => {
       });
     }
 
-    // Email validation only if provided
+    // Email validation if provided
     if (shippingAddress.email) {
       const emailRegex = /^\S+@\S+\.\S+$/;
       if (!emailRegex.test(shippingAddress.email)) {
@@ -278,90 +367,35 @@ router.post('/', verifyAuth, async (req, res) => {
       });
     }
 
-    // Payment method validation
-    const paymentMethods = {
-      card: { 
-        required: ['cardLast4'], 
-        validate: (details) => /^\d{4}$/.test(details.cardLast4)
-      },
-      upi: { 
-        required: ['upiId'], 
-        validate: (details) => /.+@.+/i.test(details.upiId)
-      },
-      netbanking: { 
-        required: ['bank'], 
-        validate: (details) => typeof details.bank === 'string' && details.bank.trim().length > 0
-      },
-      cod: { required: [], validate: () => true }
-    };
-
-    if (!paymentMethods[paymentMethod]) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid payment method',
-        validMethods: Object.keys(paymentMethods)
-      });
-    }
-
-    const method = paymentMethods[paymentMethod];
-    const missingPaymentFields = method.required.filter(field => !paymentDetails[field]);
-
-    if (missingPaymentFields.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required payment fields',
-        missingFields: missingPaymentFields
-      });
-    }
-
-    if (!method.validate(paymentDetails)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid payment details',
-        details: `Validation failed for ${paymentMethod} payment method`
-      });
-    }
-
-    // Check product availability and update quantities
-    const inventoryUpdates = [];
+    // Check stock availability (no update yet)
     const stockErrors = [];
-
+    const inventoryChecks = [];
     for (const item of items) {
-      try {
-        const product = await Product.findById(item.productId);
-        if (!product) {
-          stockErrors.push(`Product ${item.name} not found`);
-          continue;
-        }
-
-        const variant = product.variants[item.variantIndex];
-        if (!variant) {
-          stockErrors.push(`Variant not found for product ${item.name}`);
-          continue;
-        }
-
-        const weight = variant.weights[item.weightIndex];
-        if (!weight) {
-          stockErrors.push(`Weight option not found for product ${item.name}`);
-          continue;
-        }
-
-        if (weight.quantity < item.quantity) {
-          stockErrors.push(`Insufficient stock for ${item.name}. Available: ${weight.quantity}, Requested: ${item.quantity}`);
-          continue;
-        }
-
-        inventoryUpdates.push({
-          product,
-          variantIndex: item.variantIndex,
-          weightIndex: item.weightIndex,
-          quantityToDecrease: item.quantity,
-          currentQuantity: weight.quantity
-        });
-      } catch (error) {
-        console.error(`Error checking inventory for product ${item.productId}:`, error);
-        stockErrors.push(`Error checking inventory for ${item.name}`);
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        stockErrors.push(`Product ${item.name} not found`);
+        continue;
       }
+      const variant = product.variants[item.variantIndex];
+      if (!variant) {
+        stockErrors.push(`Variant not found for ${item.name}`);
+        continue;
+      }
+      const weight = variant.weights[item.weightIndex];
+      if (!weight) {
+        stockErrors.push(`Weight not found for ${item.name}`);
+        continue;
+      }
+      if (weight.quantity < item.quantity) {
+        stockErrors.push(`Insufficient stock for ${item.name}. Available: ${weight.quantity}, Requested: ${item.quantity}`);
+        continue;
+      }
+      inventoryChecks.push({
+        product,
+        variantIndex: item.variantIndex,
+        weightIndex: item.weightIndex,
+        quantityToDecrease: item.quantity
+      });
     }
 
     if (stockErrors.length > 0) {
@@ -372,6 +406,7 @@ router.post('/', verifyAuth, async (req, res) => {
       });
     }
 
+    // Create DB order
     const order = new Order({
       userId: req.user.uid,
       email: shippingAddress.email || '',
@@ -395,7 +430,7 @@ router.post('/', verifyAuth, async (req, res) => {
       deliveryFee,
       total: totalAmount,
       paymentMethod,
-      paymentDetails: paymentMethod === 'cod' ? {} : paymentDetails,
+      paymentStatus: paymentMethod === 'cod' ? 'cod' : 'pending',
       status: 'pending'
     });
 
@@ -411,66 +446,41 @@ router.post('/', verifyAuth, async (req, res) => {
 
     await order.save();
 
-    const updatePromises = inventoryUpdates.map(async (update) => {
-      try {
-        const { product, variantIndex, weightIndex, quantityToDecrease } = update;
+    let razorpayOrder = null;
+    if (paymentMethod === 'online') {
+      // Create Razorpay order
+      const razorpayOptions = {
+        amount: totalAmount * 100, // in paise
+        currency: 'INR',
+        receipt: `order_${order._id}`,
+        notes: {
+          dbOrderId: order._id.toString(),
+          userId: req.user.uid,
+          customerName: shippingAddress.name
+        }
+      };
+
+      razorpayOrder = await razorpay.orders.create(razorpayOptions);
+      order.razorpayOrderId = razorpayOrder.id;
+      await order.save();
+    } else if (paymentMethod === 'cod') {
+      // For COD, update inventory immediately
+      const updateResults = [];
+      for (const check of inventoryChecks) {
+        const { product, variantIndex, weightIndex, quantityToDecrease } = check;
         product.variants[variantIndex].weights[weightIndex].quantity -= quantityToDecrease;
         await product.save();
-        console.log(`✅ Updated inventory for product ${product.name}: decreased by ${quantityToDecrease}`);
-        return {
-          productId: product._id,
-          productName: product.name,
-          success: true,
-          newQuantity: product.variants[variantIndex].weights[weightIndex].quantity
-        };
-      } catch (error) {
-        console.error(`❌ Error updating inventory for product ${update.product._id}:`, error);
-        return {
-          productId: update.product._id,
-          productName: update.product.name,
-          success: false,
-          error: error.message
-        };
+        updateResults.push({ productId: product._id, success: true });
       }
-    });
-
-    const updateResults = await Promise.allSettled(updatePromises);
-    const successfulUpdates = [];
-    const failedUpdates = [];
-
-    updateResults.forEach((result, index) => {
-      if (result.status === 'fulfilled') {
-        if (result.value.success) {
-          successfulUpdates.push(result.value);
-        } else {
-          failedUpdates.push(result.value);
-        }
-      } else {
-        failedUpdates.push({
-          productId: inventoryUpdates[index].product._id,
-          productName: inventoryUpdates[index].product.name,
-          error: result.reason?.message || 'Unknown error'
-        });
-      }
-    });
-
-    if (successfulUpdates.length > 0) {
-      console.log(`✅ Successfully updated inventory for ${successfulUpdates.length} products`);
-    }
-
-    if (failedUpdates.length > 0) {
-      console.error(`❌ Failed to update inventory for ${failedUpdates.length} products:`, failedUpdates);
+      order.inventoryUpdated = true;
+      await order.save();
     }
 
     res.status(201).json({
       success: true,
       order: order.toObject(),
-      message: 'Order created successfully',
-      inventoryUpdate: {
-        successful: successfulUpdates.length,
-        failed: failedUpdates.length,
-        details: failedUpdates.length > 0 ? { failedUpdates } : undefined
-      }
+      razorpayOrder, // Null for COD
+      message: paymentMethod === 'online' ? 'Order created, proceed to payment' : 'Order placed successfully'
     });
   } catch (err) {
     console.error('Error creating order:', {
