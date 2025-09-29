@@ -177,6 +177,10 @@ router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Payment already processed' });
     }
 
+    if (!razorpay) {
+      return res.status(500).json({ success: false, error: 'Razorpay service unavailable' });
+    }
+
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
 
     if (order.razorpayOrderId !== razorpay_order_id) {
@@ -393,6 +397,14 @@ router.post('/', verifyAuth, async (req, res) => {
 
     let razorpayOrder = null;
     if (paymentMethod === 'online') {
+      if (!razorpay) {
+        console.error('Razorpay instance not initialized');
+        return res.status(500).json({
+          success: false,
+          error: 'Razorpay service unavailable',
+          details: 'Razorpay instance not initialized'
+        });
+      }
       try {
         if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
           throw new Error('Razorpay credentials are missing');
