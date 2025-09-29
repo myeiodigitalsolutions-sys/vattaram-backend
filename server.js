@@ -212,4 +212,24 @@ mongoose.connection.on('error', (err) => {
   }
 });
 
+
+app.get('/api/get-token', async (req, res) => {
+  try {
+    const uid = '5HqJGoGDwthvnUXgZnJmQ1IxYNw1'; // Replace with your user’s UID
+    const customToken = await admin.auth().createCustomToken(uid);
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${process.env.FIREBASE_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: customToken, returnSecureToken: true })
+    });
+    const data = await response.json();
+    if (data.idToken) {
+      res.json({ token: data.idToken });
+    } else {
+      res.status(500).json({ error: 'Failed to generate token' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 module.exports = { razorpay };
