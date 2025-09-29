@@ -4,7 +4,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const verifyAuth = require('../middleware/auth');
 const User = require('../models/User');
-const { razorpay } = require('../server');
+const razorpay = require('../utils/razorpay');
 const crypto = require('crypto');
 
 router.get('/', verifyAuth, async (req, res) => {
@@ -178,7 +178,15 @@ router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
     }
 
     if (!razorpay) {
-      return res.status(500).json({ success: false, error: 'Razorpay service unavailable' });
+      console.error('Razorpay instance not initialized in complete-payment:', {
+        keyIdSet: !!process.env.RAZORPAY_KEY_ID,
+        secretSet: !!process.env.RAZORPAY_SECRET,
+      });
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Razorpay service unavailable',
+        details: 'Razorpay instance not initialized'
+      });
     }
 
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
@@ -259,7 +267,11 @@ router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
       orderId: req.params.id,
       userId: req.user?.uid
     });
-    res.status(500).json({ success: false, error: 'Failed to complete payment', details: err.message });
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to complete payment', 
+      details: err.message 
+    });
   }
 });
 
@@ -267,7 +279,6 @@ router.post('/', verifyAuth, async (req, res) => {
   try {
     const { paymentMethod, items, shippingAddress, totalAmount, deliveryFee } = req.body;
 
-    // Log request body for debugging
     console.log('Order creation request:', { paymentMethod, items, shippingAddress, totalAmount, deliveryFee });
 
     if (!paymentMethod || !items || !shippingAddress || totalAmount === undefined || deliveryFee === undefined) {
@@ -279,11 +290,18 @@ router.post('/', verifyAuth, async (req, res) => {
     }
 
     if (!['online', 'cod'].includes(paymentMethod)) {
-      return res.status(400).json({ success: false, error: 'Invalid payment method', valid: ['online', 'cod'] });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid payment method', 
+        valid: ['online', 'cod'] 
+      });
     }
 
     if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ success: false, error: 'Items must be a non-empty array' });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Items must be a non-empty array' 
+      });
     }
 
     const itemErrors = [];
@@ -297,27 +315,44 @@ router.post('/', verifyAuth, async (req, res) => {
     });
 
     if (itemErrors.length > 0) {
-      return res.status(400).json({ success: false, error: 'Invalid items in order', details: itemErrors });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid items in order', 
+        details: itemErrors 
+      });
     }
 
     const addressFields = ['name', 'street', 'district', 'state', 'postalCode', 'phone'];
     const missingAddressFields = addressFields.filter(field => !shippingAddress[field]);
     if (missingAddressFields.length > 0) {
-      return res.status(400).json({ success: false, error: 'Missing required shipping address fields', missingFields: missingAddressFields });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required shipping address fields', 
+        missingFields: missingAddressFields 
+      });
     }
 
     const phoneRegex = /^[6-9]\d{9}$/;
     if (!phoneRegex.test(shippingAddress.phone)) {
-      return res.status(400).json({ success: false, error: 'Invalid phone number (10 digits starting with 6-9)' });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid phone number (10 digits starting with 6-9)' 
+      });
     }
 
     const postalCodeRegex = /^\d{6}$/;
     if (!postalCodeRegex.test(shippingAddress.postalCode)) {
-      return res.status(400).json({ success: false, error: 'Invalid postal code (6 digits required)' });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid postal code (6 digits required)' 
+      });
     }
 
     if (shippingAddress.email && !/^\S+@\S+\.\S+$/.test(shippingAddress.email)) {
-      return res.status(400).json({ success: false, error: 'Invalid email format' });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid email format' 
+      });
     }
 
     const subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
@@ -355,7 +390,11 @@ router.post('/', verifyAuth, async (req, res) => {
     }
 
     if (stockErrors.length > 0) {
-      return res.status(400).json({ success: false, error: 'Stock availability issues', details: stockErrors });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Stock availability issues', 
+        details: stockErrors 
+      });
     }
 
     const order = new Order({
@@ -398,7 +437,11 @@ router.post('/', verifyAuth, async (req, res) => {
     let razorpayOrder = null;
     if (paymentMethod === 'online') {
       if (!razorpay) {
-        console.error('Razorpay instance not initialized');
+        console.error('Razorpay instance not initialized in order creation:', {
+          keyIdSet: !!process.env.RAZORPAY_KEY_ID,
+          secretSet: !!process.env.RAZORPAY_SECRET,
+          razorpayModuleLoaded: !!require('razorpay'),
+        });
         return res.status(500).json({
           success: false,
           error: 'Razorpay service unavailable',
@@ -407,6 +450,10 @@ router.post('/', verifyAuth, async (req, res) => {
       }
       try {
         if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
+          console.error('Razorpay credentials missing:', {
+            keyIdSet: !!process.env.RAZORPAY_KEY_ID,
+            secretSet: !!process.env.RAZORPAY_SECRET,
+          });
           throw new Error('Razorpay credentials are missing');
         }
         const razorpayOptions = {
@@ -420,13 +467,21 @@ router.post('/', verifyAuth, async (req, res) => {
           },
           payment_capture: 1
         };
-        console.log('Creating Razorpay order with options:', razorpayOptions);
+        console.log('Creating Razorpay order with options:', {
+          ...razorpayOptions,
+          amount: razorpayOptions.amount,
+          notes: { ...razorpayOptions.notes }
+        });
         razorpayOrder = await razorpay.orders.create(razorpayOptions);
+        console.log('Razorpay order created:', razorpayOrder.id);
         order.razorpayOrderId = razorpayOrder.id;
       } catch (razorpayError) {
         console.error('Razorpay order creation failed:', {
           error: razorpayError.message,
-          stack: razorpayError.stack
+          stack: razorpayError.stack,
+          razorpayInitialized: !!razorpay,
+          keyIdSet: !!process.env.RAZORPAY_KEY_ID,
+          secretSet: !!process.env.RAZORPAY_SECRET,
         });
         return res.status(500).json({
           success: false,
@@ -436,7 +491,6 @@ router.post('/', verifyAuth, async (req, res) => {
       }
     }
 
-    // Update inventory
     const updateResults = [];
     for (const item of items) {
       const product = await Product.findById(item.productId);
