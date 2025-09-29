@@ -212,19 +212,27 @@ router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
     if (!order.inventoryUpdated) {
       for (const item of order.items) {
         const product = await Product.findById(item.productId);
-        if (product) {
-          const variant = product.variants[item.variantIndex];
-          if (variant) {
-            const weight = variant.weights[item.weightIndex];
-            if (weight && weight.quantity >= item.quantity) {
-              weight.quantity -= item.quantity;
-              await product.save();
-              inventoryUpdates.push({ productId: item.productId, success: true });
-            } else {
-              inventoryUpdates.push({ productId: item.productId, success: false, error: 'Insufficient stock' });
-            }
-          }
+        if (!product) {
+          inventoryUpdates.push({ productId: item.productId, success: false, error: `Product ${item.name} not found` });
+          continue;
         }
+        const variant = product.variants[item.variantIndex];
+        if (!variant) {
+          inventoryUpdates.push({ productId: item.productId, success: false, error: `Variant not found for ${item.name}` });
+          continue;
+        }
+        const weight = variant.weights[item.weightIndex];
+        if (!weight) {
+          inventoryUpdates.push({ productId: item.productId, success: false, error: `Weight not found for ${item.name}` });
+          continue;
+        }
+        if (weight.quantity < item.quantity) {
+          inventoryUpdates.push({ productId: item.productId, success: false, error: `Insufficient stock for ${item.name}` });
+          continue;
+        }
+        weight.quantity -= item.quantity;
+        await product.save();
+        inventoryUpdates.push({ productId: item.productId, success: true });
       }
       order.inventoryUpdated = true;
     }
@@ -241,7 +249,12 @@ router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('Error completing payment:', err);
+    console.error('Error completing payment:', {
+      error: err.message,
+      stack: err.stack,
+      orderId: req.params.id,
+      userId: req.user?.uid
+    });
     res.status(500).json({ success: false, error: 'Failed to complete payment', details: err.message });
   }
 });
@@ -249,6 +262,9 @@ router.post('/:id/complete-payment', verifyAuth, async (req, res) => {
 router.post('/', verifyAuth, async (req, res) => {
   try {
     const { paymentMethod, items, shippingAddress, totalAmount, deliveryFee } = req.body;
+
+    // Log request body for debugging
+    console.log('Order creation request:', { paymentMethod, items, shippingAddress, totalAmount, deliveryFee });
 
     if (!paymentMethod || !items || !shippingAddress || totalAmount === undefined || deliveryFee === undefined) {
       return res.status(400).json({
@@ -315,17 +331,17 @@ router.post('/', verifyAuth, async (req, res) => {
     for (const item of items) {
       const product = await Product.findById(item.productId);
       if (!product) {
-        stockErrors.push(`Product ${item.name} not found`);
+        stockErrors.push(`Product ${item.name} not found (ID: ${item.productId})`);
         continue;
       }
       const variant = product.variants[item.variantIndex];
       if (!variant) {
-        stockErrors.push(`Variant not found for ${item.name}`);
+        stockErrors.push(`Variant not found for ${item.name} (Variant Index: ${item.variantIndex})`);
         continue;
       }
       const weight = variant.weights[item.weightIndex];
       if (!weight) {
-        stockErrors.push(`Weight not found for ${item.name}`);
+        stockErrors.push(`Weight not found for ${item.name} (Weight Index: ${item.weightIndex})`);
         continue;
       }
       if (weight.quantity < item.quantity) {
@@ -367,9 +383,10 @@ router.post('/', verifyAuth, async (req, res) => {
 
     const validationError = order.validateSync();
     if (validationError) {
+      console.error('Order validation failed:', validationError);
       return res.status(400).json({
         success: false,
-        error: 'Validation error',
+        error: 'Order validation error',
         details: Object.values(validationError.errors).map(e => e.message)
       });
     }
@@ -377,6 +394,9 @@ router.post('/', verifyAuth, async (req, res) => {
     let razorpayOrder = null;
     if (paymentMethod === 'online') {
       try {
+        if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
+          throw new Error('Razorpay credentials are missing');
+        }
         const razorpayOptions = {
           amount: Math.round(totalAmount * 100),
           currency: 'INR',
@@ -388,11 +408,14 @@ router.post('/', verifyAuth, async (req, res) => {
           },
           payment_capture: 1
         };
-
+        console.log('Creating Razorpay order with options:', razorpayOptions);
         razorpayOrder = await razorpay.orders.create(razorpayOptions);
         order.razorpayOrderId = razorpayOrder.id;
       } catch (razorpayError) {
-        console.error('Razorpay order creation failed:', razorpayError);
+        console.error('Razorpay order creation failed:', {
+          error: razorpayError.message,
+          stack: razorpayError.stack
+        });
         return res.status(500).json({
           success: false,
           error: 'Failed to create Razorpay order',
@@ -405,20 +428,37 @@ router.post('/', verifyAuth, async (req, res) => {
     const updateResults = [];
     for (const item of items) {
       const product = await Product.findById(item.productId);
-      if (product) {
-        const variant = product.variants[item.variantIndex];
-        if (variant) {
-          const weight = variant.weights[item.weightIndex];
-          if (weight && weight.quantity >= item.quantity) {
-            weight.quantity -= item.quantity;
-            await product.save();
-            updateResults.push({ productId: item.productId, success: true });
-          } else {
-            updateResults.push({ productId: item.productId, success: false, error: 'Insufficient stock' });
-          }
-        }
+      if (!product) {
+        updateResults.push({ productId: item.productId, success: false, error: `Product ${item.name} not found` });
+        continue;
       }
+      const variant = product.variants[item.variantIndex];
+      if (!variant) {
+        updateResults.push({ productId: item.productId, success: false, error: `Variant not found for ${item.name}` });
+        continue;
+      }
+      const weight = variant.weights[item.weightIndex];
+      if (!weight) {
+        updateResults.push({ productId: item.productId, success: false, error: `Weight not found for ${item.name}` });
+        continue;
+      }
+      if (weight.quantity < item.quantity) {
+        updateResults.push({ productId: item.productId, success: false, error: `Insufficient stock for ${item.name}` });
+        continue;
+      }
+      weight.quantity -= item.quantity;
+      await product.save();
+      updateResults.push({ productId: item.productId, success: true });
     }
+
+    if (updateResults.some(result => !result.success)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to update inventory',
+        details: updateResults.filter(r => !r.success)
+      });
+    }
+
     order.inventoryUpdated = true;
     await order.save();
 
@@ -432,12 +472,13 @@ router.post('/', verifyAuth, async (req, res) => {
     console.error('Error creating order:', {
       error: err.message,
       stack: err.stack,
-      userId: req.user?.uid
+      userId: req.user?.uid,
+      requestBody: req.body
     });
     res.status(500).json({
       success: false,
       error: 'Failed to create order',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      details: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
     });
   }
 });
