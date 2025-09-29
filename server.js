@@ -1,9 +1,11 @@
+// server.js (Updated)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const admin = require('./firebaseAdmin');
+const razorpay = require('./utils/razorpay'); // Import from new utils file
 
 // Explicitly check for Razorpay package
 let Razorpay;
@@ -16,6 +18,10 @@ try {
     stack: error.stack
   });
 }
+
+// Verify environment variables for Razorpay
+console.log('RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? 'Set' : 'Not set');
+console.log('RAZORPAY_SECRET:', process.env.RAZORPAY_SECRET ? 'Set' : 'Not set');
 
 const districtRoutes = require('./routes/districtRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
@@ -30,34 +36,6 @@ const razorpayRoutes = require('./routes/razorpayRoutes');
 const verifyAuth = require('./middleware/auth');
 const { sendOTP, verifyOTP, verifyToken } = require('./controllers/otpController');
 const ContactMessage = require('./models/ContactMessage');
-
-// Verify environment variables for Razorpay
-console.log('RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? 'Set' : 'Not set');
-console.log('RAZORPAY_SECRET:', process.env.RAZORPAY_SECRET ? 'Set' : 'Not set');
-
-// Initialize Razorpay instance
-let razorpay = null;
-if (Razorpay) {
-  try {
-    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
-      throw new Error('Razorpay credentials are missing');
-    }
-    razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_SECRET,
-    });
-    console.log('Razorpay instance created:', !!razorpay);
-    console.log('Razorpay orders property exists:', !!razorpay?.orders);
-  } catch (error) {
-    console.error('Failed to initialize Razorpay:', {
-      error: error.message,
-      stack: error.stack
-    });
-    razorpay = null; // Ensure razorpay is null if initialization fails
-  }
-} else {
-  console.error('Razorpay package not available, skipping initialization');
-}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -211,25 +189,3 @@ mongoose.connection.on('error', (err) => {
     process.exit(1);
   }
 });
-
-
-app.get('/api/get-token', async (req, res) => {
-  try {
-    const uid = '5HqJGoGDwthvnUXgZnJmQ1IxYNw1'; // Replace with your user’s UID
-    const customToken = await admin.auth().createCustomToken(uid);
-    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${process.env.FIREBASE_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: customToken, returnSecureToken: true })
-    });
-    const data = await response.json();
-    if (data.idToken) {
-      res.json({ token: data.idToken });
-    } else {
-      res.status(500).json({ error: 'Failed to generate token' });
-    }
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-module.exports = { razorpay };
