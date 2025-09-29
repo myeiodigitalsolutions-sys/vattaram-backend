@@ -36,7 +36,7 @@ console.log('RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? 'Set' : 'Not set')
 console.log('RAZORPAY_SECRET:', process.env.RAZORPAY_SECRET ? 'Set' : 'Not set');
 
 // Initialize Razorpay instance
-let razorpay;
+let razorpay = null;
 if (Razorpay) {
   try {
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
@@ -47,13 +47,13 @@ if (Razorpay) {
       key_secret: process.env.RAZORPAY_SECRET,
     });
     console.log('Razorpay instance created:', !!razorpay);
-    // Test Razorpay instance
-    console.log('Razorpay orders property exists:', !!razorpay.orders);
+    console.log('Razorpay orders property exists:', !!razorpay?.orders);
   } catch (error) {
     console.error('Failed to initialize Razorpay:', {
       error: error.message,
       stack: error.stack
     });
+    razorpay = null; // Ensure razorpay is null if initialization fails
   }
 } else {
   console.error('Razorpay package not available, skipping initialization');
@@ -110,7 +110,6 @@ app.use(cors({
       'http://localhost:3000',
       'https://vattaram-backend-5.onrender.com',
       'https://vattaram.shop',
-      'https://vattaram-8cn5.vercel.app'
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -172,8 +171,8 @@ app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'OK', 
     database: dbStatus,
-    timestamp: new Date().toISOString(),
-    razorpay: !!razorpay ? 'initialized' : 'not initialized'
+    razorpay: razorpay ? 'initialized' : 'not initialized',
+    timestamp: new Date().toISOString()
   });
 });
 
