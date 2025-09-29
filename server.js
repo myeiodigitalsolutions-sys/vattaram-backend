@@ -4,7 +4,18 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const admin = require('./firebaseAdmin');
-const Razorpay = require('razorpay');
+
+// Explicitly check for Razorpay package
+let Razorpay;
+try {
+  Razorpay = require('razorpay');
+  console.log('Razorpay package loaded successfully');
+} catch (error) {
+  console.error('Failed to load Razorpay package:', {
+    error: error.message,
+    stack: error.stack
+  });
+}
 
 const districtRoutes = require('./routes/districtRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
@@ -26,20 +37,26 @@ console.log('RAZORPAY_SECRET:', process.env.RAZORPAY_SECRET ? 'Set' : 'Not set')
 
 // Initialize Razorpay instance
 let razorpay;
-try {
-  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
-    throw new Error('Razorpay credentials are missing');
+if (Razorpay) {
+  try {
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
+      throw new Error('Razorpay credentials are missing');
+    }
+    razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_SECRET,
+    });
+    console.log('Razorpay instance created:', !!razorpay);
+    // Test Razorpay instance
+    console.log('Razorpay orders property exists:', !!razorpay.orders);
+  } catch (error) {
+    console.error('Failed to initialize Razorpay:', {
+      error: error.message,
+      stack: error.stack
+    });
   }
-  razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_SECRET,
-  });
-  console.log('Razorpay instance created:', !!razorpay);
-} catch (error) {
-  console.error('Failed to initialize Razorpay:', {
-    error: error.message,
-    stack: error.stack
-  });
+} else {
+  console.error('Razorpay package not available, skipping initialization');
 }
 
 const app = express();
@@ -93,6 +110,7 @@ app.use(cors({
       'http://localhost:3000',
       'https://vattaram-backend-5.onrender.com',
       'https://vattaram.shop',
+      'https://vattaram-8cn5.vercel.app'
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -154,7 +172,8 @@ app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'OK', 
     database: dbStatus,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    razorpay: !!razorpay ? 'initialized' : 'not initialized'
   });
 });
 
