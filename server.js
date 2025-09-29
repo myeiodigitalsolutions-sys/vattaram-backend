@@ -20,13 +20,30 @@ const verifyAuth = require('./middleware/auth');
 const { sendOTP, verifyOTP, verifyToken } = require('./controllers/otpController');
 const ContactMessage = require('./models/ContactMessage');
 
+// Verify environment variables for Razorpay
+console.log('RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? 'Set' : 'Not set');
+console.log('RAZORPAY_SECRET:', process.env.RAZORPAY_SECRET ? 'Set' : 'Not set');
+
+// Initialize Razorpay instance
+let razorpay;
+try {
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_SECRET) {
+    throw new Error('Razorpay credentials are missing');
+  }
+  razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_SECRET,
+  });
+  console.log('Razorpay instance created:', !!razorpay);
+} catch (error) {
+  console.error('Failed to initialize Razorpay:', {
+    error: error.message,
+    stack: error.stack
+  });
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_SECRET,
-});
 
 const connectDB = async () => {
   try {
@@ -74,7 +91,6 @@ app.use(cors({
   origin: (origin, callback) => {
     const allowedOrigins = [
       'http://localhost:3000',
-      'https://vattaram-8cn5.vercel.app',
       'https://vattaram-backend-5.onrender.com',
       'https://vattaram.shop',
     ];
@@ -151,8 +167,15 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ message: 'Internal server error' });
+  console.error('Server error:', {
+    error: err.message,
+    stack: err.stack,
+    path: req.path
+  });
+  res.status(500).json({ 
+    message: 'Internal server error',
+    details: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
 });
 
 mongoose.connection.once('open', () => {
