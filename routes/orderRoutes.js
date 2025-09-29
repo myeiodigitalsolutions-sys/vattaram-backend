@@ -374,10 +374,8 @@ router.post('/', verifyAuth, async (req, res) => {
       });
     }
 
-    await order.save();
-
     let razorpayOrder = null;
-    if (order.inventoryUpdated) {
+    if (paymentMethod === 'online') {
       try {
         const razorpayOptions = {
           amount: Math.round(totalAmount * 100),
@@ -393,36 +391,36 @@ router.post('/', verifyAuth, async (req, res) => {
 
         razorpayOrder = await razorpay.orders.create(razorpayOptions);
         order.razorpayOrderId = razorpayOrder.id;
-        await order.save();
       } catch (razorpayError) {
-        await Order.deleteOne({ _id: order._id });
+        console.error('Razorpay order creation failed:', razorpayError);
         return res.status(500).json({
           success: false,
           error: 'Failed to create Razorpay order',
           details: razorpayError.message
         });
       }
-    } else {
-      const updateResults = [];
-      for (const item of items) {
-        const product = await Product.findById(item.productId);
-        if (product) {
-          const variant = product.variants[item.variantIndex];
-          if (variant) {
-            const weight = variant.weights[item.weightIndex];
-            if (weight && weight.quantity >= item.quantity) {
-              weight.quantity -= item.quantity;
-              await product.save();
-              updateResults.push({ productId: item.productId, success: true });
-            } else {
-              updateResults.push({ productId: item.productId, success: false, error: 'Insufficient stock' });
-            }
+    }
+
+    // Update inventory
+    const updateResults = [];
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (product) {
+        const variant = product.variants[item.variantIndex];
+        if (variant) {
+          const weight = variant.weights[item.weightIndex];
+          if (weight && weight.quantity >= item.quantity) {
+            weight.quantity -= item.quantity;
+            await product.save();
+            updateResults.push({ productId: item.productId, success: true });
+          } else {
+            updateResults.push({ productId: item.productId, success: false, error: 'Insufficient stock' });
           }
         }
       }
-      order.inventoryUpdated = true;
-      await order.save();
     }
+    order.inventoryUpdated = true;
+    await order.save();
 
     res.status(201).json({
       success: true,
