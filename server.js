@@ -1,27 +1,11 @@
-// server.js (Updated)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
 const bodyParser = require('body-parser');
 const admin = require('./firebaseAdmin');
-const razorpay = require('./utils/razorpay'); // Import from new utils file
-
-// Explicitly check for Razorpay package
-let Razorpay;
-try {
-  Razorpay = require('razorpay');
-  console.log('Razorpay package loaded successfully');
-} catch (error) {
-  console.error('Failed to load Razorpay package:', {
-    error: error.message,
-    stack: error.stack
-  });
-}
-
-// Verify environment variables for Razorpay
-console.log('RAZORPAY_KEY_ID:', process.env.RAZORPAY_KEY_ID ? 'Set' : 'Not set');
-console.log('RAZORPAY_SECRET:', process.env.RAZORPAY_SECRET ? 'Set' : 'Not set');
+const jwt = require('jsonwebtoken');
 
 const districtRoutes = require('./routes/districtRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
@@ -32,9 +16,10 @@ const deals = require('./routes/dealsRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const wishlistRoutes = require('./routes/wishlistRoutes');
-const razorpayRoutes = require('./routes/razorpayRoutes');
+
 const verifyAuth = require('./middleware/auth');
 const { sendOTP, verifyOTP, verifyToken } = require('./controllers/otpController');
+const User = require('./models/User');
 const ContactMessage = require('./models/ContactMessage');
 
 const app = express();
@@ -56,10 +41,6 @@ const connectDB = async () => {
     console.log('Cart model loaded');
     require('./models/ContactMessage');
     console.log('ContactMessage model loaded');
-    require('./models/Order');
-    console.log('Order model loaded');
-    require('./models/Product');
-    console.log('Product model loaded');
 
     mongoose.connection.on('error', (err) => {
       console.error('MongoDB connection error:', err);
@@ -84,10 +65,11 @@ connectDB();
 
 app.use(cors({
   origin: (origin, callback) => {
+    console.log('Request Origin:', origin);
     const allowedOrigins = [
       'http://localhost:3000',
-      'https://vattaram-backend-5.onrender.com',
-      'https://vattaram.shop',
+      'https://vattaram-8cn5.vercel.app',
+     
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -101,7 +83,9 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(bodyParser.json());
+// Removed: app.use('/uploads', express.static(path.join(__dirname, 'Uploads')));
 
+// Contact Message Routes
 app.post('/api/contact', async (req, res) => {
   try {
     const { name, email, message } = req.body;
@@ -141,7 +125,6 @@ app.use('/api/cart', verifyAuth, cartRoutes);
 app.use('/api/orders', verifyAuth, orderRoutes);
 app.use('/api/users', require('./routes/users'));
 app.use('/api/wishlist', wishlistRoutes);
-app.use('/api/razorpay', razorpayRoutes);
 app.use('/admin', require('./routes/admin'));
 
 app.get('/health', (req, res) => {
@@ -149,7 +132,6 @@ app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'OK', 
     database: dbStatus,
-    razorpay: razorpay ? 'initialized' : 'not initialized',
     timestamp: new Date().toISOString()
   });
 });
@@ -163,15 +145,8 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error('Server error:', {
-    error: err.message,
-    stack: err.stack,
-    path: req.path
-  });
-  res.status(500).json({ 
-    message: 'Internal server error',
-    details: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
+  console.error(err.stack);
+  res.status(500).json({ message: 'Internal server error' });
 });
 
 mongoose.connection.once('open', () => {
