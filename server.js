@@ -69,6 +69,7 @@ app.use(cors({
     const allowedOrigins = [
       'http://localhost:3000',
       'https://vattaram-8cn5.vercel.app',
+      'https://vattaram.shop',
      
     ];
     if (!origin || allowedOrigins.includes(origin)) {
