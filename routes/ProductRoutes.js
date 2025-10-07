@@ -19,8 +19,7 @@ const upload = multer({
 });
 
 // Initialize Firebase Storage bucket
-const bucket = admin.storage().bucket('vattaram-63357.appspot.com');
-
+const bucket = admin.storage().bucket('vattaram-63357.firebasestorage.app');
 // GET all products with variants flattened and full image URLs
 router.get('/', async (req, res) => {
   try {
