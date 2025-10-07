@@ -19,7 +19,7 @@ const upload = multer({
 });
 
 // Initialize Firebase Storage bucket
-const bucket = admin.storage().bucket();
+const bucket = admin.storage().bucket('vattaram-63357.appspot.com');
 
 // GET all products with variants flattened and full image URLs
 router.get('/', async (req, res) => {
@@ -174,7 +174,16 @@ router.post('/', upload.array('images', 10), async (req, res) => {
       return res.status(400).json({ error: 'At least one image is required' });
     }
 
-    // Upload all images to Firebase Storage
+    // Verify bucket existence
+    try {
+      await bucket.getMetadata();
+      console.log('Bucket exists:', bucket.name);
+    } catch (err) {
+      console.error('Bucket verification error:', err);
+      return res.status(500).json({ error: 'Storage bucket not found or inaccessible', details: err.message });
+    }
+
+    // Upload images
     const uploadPromises = req.files.map(async (file) => {
       const filename = `${Date.now()}-${file.originalname}`;
       console.log('Uploading to bucket:', bucket.name);
@@ -230,7 +239,6 @@ router.post('/', upload.array('images', 10), async (req, res) => {
     res.status(500).json({ error: 'Failed to add product', details: err.message });
   }
 });
-
 // PUT update product with optional multiple image uploads to Firebase
 router.put('/:id', upload.array('images', 10), async (req, res) => {
   try {
