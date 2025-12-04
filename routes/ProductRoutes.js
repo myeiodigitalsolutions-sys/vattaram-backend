@@ -166,57 +166,94 @@ router.put('/:id/trending-order', async (req, res) => {
  * Apply a percentage discount to products.
  * Body: { category: "Snacks" | "ALL" | "", discountPercentage: Number }
  */
+// PUT apply/remove discount for products (by category or all)
 router.put('/discount', async (req, res) => {
   try {
-    const { category, discountPercentage } = req.body;
+    const {
+      action,              // "apply" or "remove"
+      category,            // specific category name or "ALL" or empty
+      discountPercentage,  // number, required when action = "apply"
+      startDate,           // optional ISO date string
+      endDate              // optional ISO date string
+    } = req.body;
 
-    if (discountPercentage === undefined || discountPercentage === null) {
-      return res.status(400).json({ error: 'Discount percentage is required' });
+    if (!['apply', 'remove'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Use "apply" or "remove".' });
     }
 
-    const discount = parseFloat(discountPercentage);
-    if (!Number.isFinite(discount) || discount <= 0 || discount >= 100) {
-      return res.status(400).json({ error: 'Discount percentage must be between 0 and 100' });
+    let discount = 0;
+    if (action === 'apply') {
+      if (discountPercentage === undefined || discountPercentage === null) {
+        return res.status(400).json({ error: 'discountPercentage is required when applying discount.' });
+      }
+      discount = Number(discountPercentage);
+      if (isNaN(discount) || discount <= 0 || discount > 100) {
+        return res.status(400).json({ error: 'discountPercentage must be between 1 and 100.' });
+      }
     }
 
-    const filter = {};
-    // If category is provided and not "ALL", limit to that category
+    // Build query
+    const query = {};
     if (category && category !== 'ALL') {
-      filter.category = category;
+      query.category = category;
     }
 
-    const products = await Product.find(filter);
+    const products = await Product.find(query);
 
     if (!products.length) {
-      return res.status(404).json({ error: 'No products found to apply discount' });
+      return res.status(404).json({ error: 'No products found for the given filter.' });
     }
 
-    const multiplier = (100 - discount) / 100;
-    let totalWeightsUpdated = 0;
-
     for (const product of products) {
-      product.variants.forEach(variant => {
-        variant.weights.forEach(weight => {
-          if (typeof weight.price === 'number') {
-            const newPrice = parseFloat((weight.price * multiplier).toFixed(2));
-            weight.price = newPrice;
-            totalWeightsUpdated += 1;
-          }
+      if (action === 'apply') {
+        product.hasActiveDiscount = true;
+        product.discountPercentage = discount;
+        product.discountStartDate = startDate ? new Date(startDate) : null;
+        product.discountEndDate = endDate ? new Date(endDate) : null;
+
+        product.variants.forEach(variant => {
+          variant.weights.forEach(weight => {
+            // if originalPrice is not set, set it first
+            if (weight.originalPrice == null) {
+              weight.originalPrice = weight.price;
+            }
+
+            const base = weight.originalPrice || weight.price;
+            const discounted = base - (base * discount / 100);
+            // You can adjust rounding if you like: Math.round(discounted)
+            weight.price = Number(discounted.toFixed(2));
+          });
         });
-      });
+      } else if (action === 'remove') {
+        // Remove discount and restore prices
+        product.hasActiveDiscount = false;
+        product.discountPercentage = 0;
+        product.discountStartDate = null;
+        product.discountEndDate = null;
+
+        product.variants.forEach(variant => {
+          variant.weights.forEach(weight => {
+            if (weight.originalPrice != null) {
+              weight.price = weight.originalPrice;
+            }
+          });
+        });
+      }
+
       await product.save();
     }
 
     res.json({
-      message: 'Discount applied successfully',
-      affectedProducts: products.length,
-      updatedWeights: totalWeightsUpdated
+      success: true,
+      action,
+      affectedProducts: products.length
     });
   } catch (err) {
-    console.error('❌ Error applying discount:', err.message);
-    res.status(500).json({ error: 'Failed to apply discount', details: err.message });
+    console.error('❌ Error applying/removing discount:', err.message);
+    res.status(500).json({ error: 'Failed to update discounts', details: err.message });
   }
 });
+
 
 // POST add new product with multiple image uploads to Firebase
 router.post('/', upload.array('images', 10), async (req, res) => {
