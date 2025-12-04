@@ -20,6 +20,7 @@ const upload = multer({
 
 // Initialize Firebase Storage bucket
 const bucket = admin.storage().bucket('vattaram-63357.firebasestorage.app');
+
 // GET all products with variants flattened and full image URLs
 router.get('/', async (req, res) => {
   try {
@@ -160,6 +161,63 @@ router.put('/:id/trending-order', async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/products/discount
+ * Apply a percentage discount to products.
+ * Body: { category: "Snacks" | "ALL" | "", discountPercentage: Number }
+ */
+router.put('/discount', async (req, res) => {
+  try {
+    const { category, discountPercentage } = req.body;
+
+    if (discountPercentage === undefined || discountPercentage === null) {
+      return res.status(400).json({ error: 'Discount percentage is required' });
+    }
+
+    const discount = parseFloat(discountPercentage);
+    if (!Number.isFinite(discount) || discount <= 0 || discount >= 100) {
+      return res.status(400).json({ error: 'Discount percentage must be between 0 and 100' });
+    }
+
+    const filter = {};
+    // If category is provided and not "ALL", limit to that category
+    if (category && category !== 'ALL') {
+      filter.category = category;
+    }
+
+    const products = await Product.find(filter);
+
+    if (!products.length) {
+      return res.status(404).json({ error: 'No products found to apply discount' });
+    }
+
+    const multiplier = (100 - discount) / 100;
+    let totalWeightsUpdated = 0;
+
+    for (const product of products) {
+      product.variants.forEach(variant => {
+        variant.weights.forEach(weight => {
+          if (typeof weight.price === 'number') {
+            const newPrice = parseFloat((weight.price * multiplier).toFixed(2));
+            weight.price = newPrice;
+            totalWeightsUpdated += 1;
+          }
+        });
+      });
+      await product.save();
+    }
+
+    res.json({
+      message: 'Discount applied successfully',
+      affectedProducts: products.length,
+      updatedWeights: totalWeightsUpdated
+    });
+  } catch (err) {
+    console.error('❌ Error applying discount:', err.message);
+    res.status(500).json({ error: 'Failed to apply discount', details: err.message });
+  }
+});
+
 // POST add new product with multiple image uploads to Firebase
 router.post('/', upload.array('images', 10), async (req, res) => {
   try {
@@ -238,6 +296,7 @@ router.post('/', upload.array('images', 10), async (req, res) => {
     res.status(500).json({ error: 'Failed to add product', details: err.message });
   }
 });
+
 // PUT update product with optional multiple image uploads to Firebase
 router.put('/:id', upload.array('images', 10), async (req, res) => {
   try {
