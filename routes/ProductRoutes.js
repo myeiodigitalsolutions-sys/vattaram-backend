@@ -45,7 +45,13 @@ router.get('/', async (req, res) => {
           createdAt: product.createdAt,
           updatedAt: product.updatedAt,
           isTrending: product.isTrending,
-          trendingOrder: product.trendingOrder
+          trendingOrder: product.trendingOrder,
+
+            // 🔥 discount fields
+  hasActiveDiscount: product.hasActiveDiscount,
+  discountPercentage: product.discountPercentage,
+  discountStartDate: product.discountStartDate,
+  discountEndDate: product.discountEndDate
         }))
       )
     );
