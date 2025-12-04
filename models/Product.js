@@ -17,6 +17,10 @@ const variantSchema = new mongoose.Schema({
       required: true,
       min: [0, 'Price must be positive']
     },
+       originalPrice: {
+      type: Number,
+      min: [0, 'Original price must be positive']
+    },
     quantity: {
       type: Number,
       required: true,
@@ -74,6 +78,23 @@ const productSchema = new mongoose.Schema({
   trendingOrder: {
     type: Number,
     default: -1
+  },
+  // ===== DISCOUNT FIELDS =====
+  hasActiveDiscount: {
+    type: Boolean,
+    default: false
+  },
+  discountPercentage: {
+    type: Number,
+    min: [0, 'Discount must be non-negative'],
+    max: [100, 'Discount cannot exceed 100'],
+    default: 0
+  },
+  discountStartDate: {
+    type: Date
+  },
+  discountEndDate: {
+    type: Date
   },
   variants: {
     type: [variantSchema],
